@@ -28,6 +28,10 @@ func Dial(rawurls []string) (*Client, error) {
 // DialContext connect all rawurls
 // if all rpc error, an error will return
 func DialContext(ctx context.Context, rawurls []string) (*Client, error) {
+	return DialOptions(ctx, rawurls)
+}
+
+func DialOptions(ctx context.Context, rawurls []string, options ...rpc.ClientOption) (*Client, error) {
 	if len(rawurls) == 0 {
 		return nil, errors.New("empty rawurls")
 	}
@@ -35,7 +39,7 @@ func DialContext(ctx context.Context, rawurls []string) (*Client, error) {
 	innerClients := make([]*ethclient.Client, 0, len(rawurls))
 	var lastErr error
 	for _, rawurl := range rawurls {
-		rpcClient, err := rpc.DialContext(ctx, rawurl)
+		rpcClient, err := rpc.DialOptions(ctx, rawurl, options...)
 		if err != nil {
 			lastErr = err
 			continue
