@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"runtime"
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
@@ -15,8 +16,19 @@ import (
 	"github.com/ethereum/go-ethereum/rpc"
 )
 
+const errLatency = 10000000 // 10s
+const pingInterval = 60     // 60s
+
 type Client struct {
-	clients         []*ethclient.Client
+	clients []*ethclient.Client
+
+	// round trip latency, microseconds
+	// do not create a long time run goroutine to ping latency,
+	// because app may create lots of Client instance, that my cause goroutine leak
+	latency    []int64
+	lastPingAt int64
+	pingLock   sync.Mutex
+
 	concurrentCount int
 }
 
@@ -57,10 +69,13 @@ func DialOptions(ctx context.Context, concurrentCount int, rawurls []string, opt
 	if len(innerClients) == 0 {
 		return nil, lastErr
 	}
-	return &Client{
+	ec := &Client{
 		clients:         innerClients,
 		concurrentCount: concurrentCount,
-	}, nil
+		latency:         make([]int64, len(rawurls)),
+	}
+	ec.tryPingAllClient()
+	return ec, nil
 }
 
 func (ec *Client) Close() {
@@ -73,8 +88,57 @@ func (ec *Client) Clients() []*ethclient.Client {
 	return ec.clients
 }
 
+// tryPingAllClient check last ping time, when need ping, create a goroutine and ping all client
+func (ec *Client) tryPingAllClient() {
+	now := time.Now().Unix()
+	if now-ec.lastPingAt < pingInterval {
+		return
+	}
+	go ec.pingAllClient()
+}
+
+func (ec *Client) pingAllClient() {
+	ec.pingLock.Lock()
+	defer ec.pingLock.Unlock()
+	now := time.Now().Unix()
+	if now-ec.lastPingAt < pingInterval {
+		return
+	}
+
+	for i, client := range ec.clients {
+		ec.latency[i] = ping(client)
+	}
+	ec.lastPingAt = now
+}
+
+// ping a client, get latency
+func ping(client *ethclient.Client) int64 {
+	begin := time.Now().UnixMicro()
+	_, err := client.ChainID(context.Background())
+	if err == nil {
+		return time.Now().UnixMicro() - begin
+	} else {
+		return errLatency
+	}
+}
+
 func (ec *Client) RandClient() *ethclient.Client {
-	return ec.clients[rand.Intn(len(ec.clients))]
+	if len(ec.clients) <= 1 {
+		return ec.clients[0]
+	}
+
+	// p2c
+	clientSize := len(ec.clients)
+	a := rand.Intn(clientSize)
+	b := a
+	for b == a {
+		b = rand.Intn(clientSize)
+	}
+	if ec.latency[a] < ec.latency[b] {
+		return ec.clients[a]
+	} else {
+		return ec.clients[b]
+	}
 }
 
 func (ec *Client) pickMultiClients() []*ethclient.Client {
@@ -102,6 +166,7 @@ func (ec *Client) call(ctx context.Context, f func(context.Context, *ethclient.C
 // callWithMultiClient pick two client call function f
 // return success when one success, fail when all fail
 func (ec *Client) callWithMultiClient(ctx context.Context, f func(context.Context, *ethclient.Client) error) error {
+	ec.tryPingAllClient()
 	// use just one client, call directly
 	if ec.concurrentCount == 1 {
 		return f(ctx, ec.RandClient())
