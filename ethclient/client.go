@@ -88,6 +88,10 @@ func (ec *Client) Clients() []*ethclient.Client {
 	return ec.clients
 }
 
+func (ec *Client) Client() *rpc.Client {
+	return ec.RandClient().Client()
+}
+
 // tryPingAllClient check last ping time, when need ping, create a goroutine and ping all client
 func (ec *Client) tryPingAllClient() {
 	now := time.Now().Unix()
